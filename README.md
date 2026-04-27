@@ -13,18 +13,28 @@ For every image, the pipeline predicts:
 
 The images have two types of background (white vs noisy) and two types of card layouts (non-overlapping vs overlapping).
 
-<img src='images/L1000772.jpg' alt='white_noverlap' width = "40%">
-<img src='images/L1000836.jpg' alt='white_overlap' width = "40%">
-<img src='images/L1000910.jpg' alt='noisy_noverlap' width = "40%">
-<img src='images/L1000973.jpg' alt='noisy_overlap' width = "40%">
+<img src='images/L1000772.jpg' alt='white_noverlap' width = "30%">
+<img src='images/L1000836.jpg' alt='white_overlap' width = "30%">
+<img src='images/L1000910.jpg' alt='noisy_noverlap' width = "30%">
+<img src='images/L1000973.jpg' alt='noisy_overlap' width = "30%">
 
 ### Model output
 
-The results model predictions are stored in a csv following the convention shown : 
+The submission file must be a CSV with the following columns (see the sample_submission.csv):
+image_id,center_card,active_player,player_1_cards,player_2_cards,player_3_cards,player_4_cards
+
+- Cards are annotated as follows:
 
 <img src='images/card_annotations.jpg' alt='card_annotations' width = 50%>
 
 
+- Multiple cards must be separated by a semicolon ; (e.g. r_5;b_skip;y_2)
+
+- If a player has no cards, write: EMPTY
+
+- active_player field is one of: p1, p2, p3, p4
+
+#### Example: 
 <div>
 <style scoped>
     .dataframe tbody tr th:only-of-type {
