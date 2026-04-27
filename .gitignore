@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Data in order to keep the repository clean and avoid uploading large files to GitHub.
+data/
