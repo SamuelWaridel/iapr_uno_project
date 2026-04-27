@@ -117,6 +117,14 @@ image_id,center_card,active_player,player_1_cards,player_2_cards,player_3_cards,
 </table>
 </div>
 
+NOTE: 
+- Card order does not matter. (e.g. b_5;g_reverse == g_reverse;b_5)
+- If a player holds the same card multiple times, it must be explicitly repeated.
+- Players may be missing at arbitrary positions (EMPTY hands)
+- Player positions are fixed
+
+<img src='images/game_example.jpg' alt='game example' width='50%'>
+
 ### Scoring and evaluation
 
 The results obtained from the test dataset are then submitted to [Kaggle](https://www.kaggle.com/competitions/iapr-26-uno-vision-challenge/overview) for scoring.
