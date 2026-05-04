@@ -229,7 +229,3 @@ def crop_regions(img, group_bboxes):
     return regions
 
 
-
-
-
-
