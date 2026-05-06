@@ -66,7 +66,7 @@ def blob_bbox(blobs, centroids_xy, areas):
  
     return group_centroids, group_bboxes
 
-def compute_color_features(card):
+def compute_color_features(card, saturation_threshold=0.3):
     """
     Compute the mean of each channel in the colored portion of the card.
     Determines the region of interest based on the quantile of the ratio in each channel.
@@ -74,18 +74,24 @@ def compute_color_features(card):
 
     Args:
         card (numpy.ndarray): The input card image. Must be a 3-channel RGB image.
+        saturation_threshold (float): The threshold for selecting the colored region based on saturation.
 
     Returns:
         means (dict): A dictionary containing the mean of the color ratios.
     """
     # select colored region based on saturation
-    sat_mask = rgb2hsv(card / 255.0)[:, :, 1] > 0.3
+    sat_mask = rgb2hsv(card / 255.0)[:, :, 1] > saturation_threshold
+    
+    # Check if the mask is empty (i.e., no valid pixels in the colored region)
+    if sat_mask.sum() == 0:
+        print("No colored region detected in the card image. Returning NaN for color features.")
+        return {"r/g": np.nan, "r/b": np.nan, "g/b": np.nan}  # Or return default values
     
     r_g = card[:,:,0][sat_mask] / (card[:,:,1][sat_mask] + 1e-8)  # avoid division by zero
     r_b = card[:,:,0][sat_mask] / (card[:,:,2][sat_mask] + 1e-8)
     g_b = card[:,:,1][sat_mask] / (card[:,:,2][sat_mask] + 1e-8)
     
-    means = {"r/g": r_g.mean(), "r/b": r_b.mean(), "g/b": g_b.mean()}
+    means = {"r/g": np.nanmean(r_g), "r/b": np.nanmean(r_b), "g/b": np.nanmean(g_b)}
             
     return means
 
@@ -104,28 +110,29 @@ def determine_card_color(color_means, tolerance=0.25):
 
     def is_red():
         # Red cards should have a high r/g and r/b ratio, and a g/b ratio close to 1.
-        return (means["r/g"] > 1 + tolerance and means["r/b"] > 1 + tolerance and abs(means["g/b"] - 1) <= tolerance)
+        # The specific shade of red we want has the green channel slightly higher than the blue channel, so the g/b ratio should be around 1.2. (Determined empirically from the training images)
+        return (means["r/g"] > 1 + tolerance and means["r/b"] > 1 + tolerance and abs(means["g/b"] - 1.2) <= tolerance)
     
     def is_green():
         # Green cards should have a low r/g ratio, a r/b ratio close to 1, and a g/b ratio greater than 1.
         # The specific shade of green we want has the red at approximately 65% of the intensity of the green channel and blue channels approximately 55% the intensity of the green channel
-        # This means that the r/g ratio should be around 0.6, the r/b ratio should be around 1, and the g/b ratio should be around 2.
+        # This means that the r/g ratio should be around 0.6, the r/b ratio should be around 1, and the g/b ratio should be around 2. (Determined empirically from the training images)
         return (means["r/g"] < 0.65 + tolerance and abs(means["r/b"] - 1) <= tolerance and abs(means["g/b"] - 1.8) <= tolerance)
     
     def is_blue():
         # Blue cards should have a low r/g and r/b ratio, and a g/b ratio close to 1.
         # The specific shade of blue we want has the green channel approximately at 80% the intensity of the blue channel
-        # This means that the r/g ratio should be low, the r/b ratio should be low, and the g/b ratio should be around 0.8.
+        # This means that the r/g ratio should be low, the r/b ratio should be low, and the g/b ratio should be around 0.8. (Determined empirically from the training images)
         return (means["r/g"] < 1 - tolerance and means["r/b"] < 1 - tolerance and abs(means["g/b"] - 0.8) <= tolerance)
     
     def is_yellow():
         # Yellow cards should have a r/g ratio close to 1, a r/b ratio greater than 1, and a g/b ratio greater than 1.
         # The shade of yellow we want has the red and green channels approximately at the same intensity and the blue channel much lower than the others.
-        # This means that the r/g ratio should be around 1, the r/b ratio should be large, and the g/b ratio should be large as well.
+        # This means that the r/g ratio should be around 1, the r/b ratio should be large, and the g/b ratio should be large as well. (Determined empirically from the training images)
         return (abs(means["r/g"] - 1) <= tolerance and means["r/b"] > 1 + tolerance and means["g/b"] > 1 + tolerance)
     
     def is_special():
-        # Special cards (like wild cards) might have a black background giving ratios close to 1 for all channels.
+        # Special cards (like wild cards) might have a black background giving ratios close to 1 for all channels. !!! Still not properly working
         return (abs(means["r/g"] - 1) <= tolerance and abs(means["r/b"] - 1) <= tolerance and abs(means["g/b"] - 1) <= tolerance)
     
     if is_red():
@@ -163,6 +170,10 @@ def detect_card_color_from_group_image(group_img, color_detection_tolerance=0.25
     # Extract blobs from the cleaned mask to identify individual cards
     blobs, centroids_xy, areas = extract_blobs(mask_)
     group_centroids, group_bboxes = blob_bbox(blobs, centroids_xy, areas)
+    
+    if len(group_bboxes) == 0:
+        print("No cards detected in the group image.")
+        return
     
     # separate individual cards from the player region using the group bounding boxes and the mask
     print("Extracting images of individual cards from the group image...")

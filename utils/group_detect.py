@@ -231,4 +231,48 @@ def crop_regions(img, group_bboxes):
         regions[lbl] = img[minr:maxr, minc:maxc]
     return regions
 
+def segment_cards_noisy_background(img, plot=False):
+    """
+    Produce a binary mask that isolates UNO cards from the noisy background.
+ 
+    Strategy: after background subtraction, we can use HSV color space to separate the cards from the background.
+    Cards have high saturation and value, while the background is more desaturated and darker. 
+    We can use quantiles to set adaptive thresholds for saturation and value, creating a mask that highlights the cards.
+ 
+    Args:
+        img (np.ndarray): RGB image, shape (H, W, 3), values in [0, 1].
+        plot (bool): If True, display the background-subtracted image and the resulting mask side by side for debugging.
+ 
+    Returns:
+        mask (np.ndarray): boolean mask, True where cards are present.
+    """
+    # Check if the input image is normalized to the range [0, 1]
+    if img.max() > 1.0:
+        print("Warning: Input image should be normalized to the range [0, 1]. Normalizing now.")
+        img = img / 255.0
+    
+    # Convert RGB to HSV color space
+    hsv_img = rgb2hsv(img)
+    
+    sat = hsv_img[:, :, 1]
+    val = hsv_img[:, :, 2]
 
+    # Thresholds for hsv
+    saturation_threshold = np.quantile(sat, 0.05)
+    value_threshold = np.quantile(val, 0.80)
+
+    # Create a mask based on the thresholds
+    mask = (sat > saturation_threshold) & (val > value_threshold)
+    
+    if plot:
+        fig, axes = plt.subplots(1, 2, figsize=(18, 6))
+        axes[0].imshow(img)
+        axes[1].imshow(mask)
+        axes[0].set_title("Background Subtracted Image")
+        axes[1].set_title("Segmented Mask")
+        for ax in axes:
+            ax.axis("off")
+        plt.tight_layout()
+        plt.show()
+
+    return mask
