@@ -7,6 +7,7 @@ from skimage.measure import label, regionprops
 from scipy.spatial.distance import cdist
 from collections import defaultdict
 from PIL import Image
+from scipy.ndimage import binary_fill_holes
 
 
 def load_image(image_path):
@@ -78,7 +79,9 @@ def clean_mask(mask, close_radius=60, open_radius=5, min_blob_size=5000):
  
     # Discard blobs that are too small to be a card
     cleaned = remove_small_objects(opened, min_size=min_blob_size)
-    return cleaned
+
+    filled = binary_fill_holes(cleaned)
+    return filled
 
 def extract_blobs(cleaned_mask):
     """
