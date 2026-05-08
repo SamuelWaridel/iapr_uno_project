@@ -2,12 +2,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from skimage.color import rgb2hsv
-from skimage.morphology import closing, opening, disk, remove_small_objects
+from skimage.morphology import remove_small_objects
 from skimage.measure import label, regionprops
 from scipy.spatial.distance import cdist
 from collections import defaultdict
 from PIL import Image
-from scipy.ndimage import binary_fill_holes
+import cv2
 
 
 def load_image(image_path):
@@ -50,38 +50,46 @@ def segment_cards(img):
     mask = (val > 0.75) & ~((sat < 0.08) & (val > 0.80))
     return mask
 
-def clean_mask(mask, close_radius=60, open_radius=5, min_blob_size=5000):
+def clean_mask(mask, close_radius=60, open_radius=5, min_blob_size=5000,
+               downsample=4):
     """
     Apply morphological closing and opening to the binary mask, then remove
     small spurious blobs.
- 
-    - Closing (large disk): bridges the small gaps between adjacent cards
-      in the same hand, merging them into a single connected region.
-    - Opening (small disk): removes thin noise and isolated bright pixels
-      that survived the threshold step.
-    - remove_small_objects: discards any remaining tiny blobs that are
-      clearly not cards (dust, reflections, etc.).
- 
+
+    Morphology is done at 1/downsample resolution with OpenCV (much faster
+    than skimage on full-res images with large kernels), then upsampled back.
+
     Args:
         mask          (np.ndarray): boolean mask from segment_cards().
-        close_radius  (int)       : radius of the closing disk (default 60 px).
-        open_radius   (int)       : radius of the opening disk (default 5 px).
+        close_radius  (int)       : closing disk radius in full-res pixels.
+        open_radius   (int)       : opening disk radius in full-res pixels.
         min_blob_size (int)       : minimum blob area to keep, in pixels.
- 
-    Returns:
-        cleaned (np.ndarray): cleaned boolean mask.
-    """
-    # Close gaps between cards of the same hand
-    closed = closing(mask, disk(close_radius))
- 
-    # Remove thin noise introduced or left by closing
-    opened = opening(closed, disk(open_radius))
- 
-    # Discard blobs that are too small to be a card
-    cleaned = remove_small_objects(opened, min_size=min_blob_size)
+        downsample    (int)       : resolution reduction factor for morphology.
 
-    filled = binary_fill_holes(cleaned)
-    return filled
+    Returns:
+        cleaned (np.ndarray): cleaned boolean mask, full resolution.
+    """
+    H, W = mask.shape
+    sh, sw = H // downsample, W // downsample
+
+    small = cv2.resize(mask.astype(np.uint8) * 255,
+                       (sw, sh), interpolation=cv2.INTER_NEAREST)
+
+    r_close = max(1, close_radius // downsample)
+    r_open  = max(1, open_radius  // downsample)
+
+    k_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
+                                        (2 * r_close + 1, 2 * r_close + 1))
+    k_open  = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
+                                        (2 * r_open  + 1, 2 * r_open  + 1))
+
+    closed = cv2.morphologyEx(small,  cv2.MORPH_CLOSE, k_close)
+    opened = cv2.morphologyEx(closed, cv2.MORPH_OPEN,  k_open)
+
+    full = cv2.resize(opened, (W, H), interpolation=cv2.INTER_NEAREST)
+
+    cleaned = remove_small_objects(full > 0, min_size=min_blob_size)
+    return cleaned
 
 def extract_blobs(cleaned_mask):
     """
