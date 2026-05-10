@@ -154,3 +154,28 @@ def remove_background(image, background_image):
     
     
     return np.abs(image - background_image)
+
+def preprocess_background(image, bg_type, reference_bg=None):
+    """
+    Conditional background preprocessing.
+
+    Args:
+        image (np.ndarray)       : RGB image, uint8 [0,255] or float [0,1].
+        bg_type (str)            : 'white' or 'noisy', from detect_background_type().
+        reference_bg (np.ndarray): reference background image (only used when
+                                   bg_type == 'noisy').
+
+    Returns:
+        np.ndarray, float [0, 1].
+    """
+    img = image.astype(np.float32)
+    if img.max() > 1.0:
+        img = img / 255.0
+
+    if bg_type == "white":
+        return img
+    if bg_type == "noisy":
+        if reference_bg is None:
+            raise ValueError("reference_bg is required for noisy backgrounds.")
+        return remove_background(img, reference_bg)
+    raise ValueError(f"Unknown bg_type: {bg_type!r}. Expected 'white' or 'noisy'.")
