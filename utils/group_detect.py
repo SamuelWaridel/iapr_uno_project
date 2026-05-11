@@ -54,7 +54,7 @@ def segment_cards(img):
     return mask
 
 def clean_mask(mask, close_radius=60, open_radius=5, min_blob_size=5000,
-               downsample=4, pre_open_radius=0): 
+               downsample=4, pre_open_radius=0, pre_close_min_blob_size=0): 
     H, W = mask.shape
     sh, sw = H // downsample, W // downsample
     small = cv2.resize(mask.astype(np.uint8) * 255,
@@ -71,8 +71,10 @@ def clean_mask(mask, close_radius=60, open_radius=5, min_blob_size=5000,
 
     k_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*r_close+1, 2*r_close+1))
     k_open  = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*r_open+1,  2*r_open+1))
+    
+    small_cleaned = remove_small_objects(small > 0, min_size=pre_close_min_blob_size).astype(np.uint8) * 255
 
-    closed = cv2.morphologyEx(small,  cv2.MORPH_CLOSE, k_close)
+    closed = cv2.morphologyEx(small_cleaned,  cv2.MORPH_CLOSE, k_close)
     opened = cv2.morphologyEx(closed, cv2.MORPH_OPEN,  k_open)
     full   = cv2.resize(opened, (W, H), interpolation=cv2.INTER_NEAREST)
     return remove_small_objects(full > 0, min_size=min_blob_size)
@@ -315,7 +317,7 @@ def crop_regions(img, group_bboxes):
         regions[lbl] = img[minr:maxr, minc:maxc]
     return regions
 
-def segment_cards_noisy_background(img, val_quantile=0.80, sat_quantile=0.05, plot=False):
+def segment_cards_noisy_background(img, val_quantile=0.90, sat_quantile=0.05, plot=False):
     if img.max() > 1.0:
         img = img / 255.0
     hsv = rgb2hsv(img)
@@ -340,9 +342,9 @@ PIPELINE_PARAMS = {
                              pre_open_radius=0),
     },
     "noisy": {
-        "seg_kwargs":   dict(val_quantile=0.70, sat_quantile=0.05),
-        "clean_kwargs": dict(close_radius=80, open_radius=2, min_blob_size=4500,
-                            pre_open_radius=16),
+        "seg_kwargs":   dict(val_quantile=0.90, sat_quantile=0.05),
+        "clean_kwargs": dict(close_radius=80, open_radius=2, min_blob_size=5000,
+                            pre_open_radius=4, pre_close_min_blob_size=50),
     },
 }
 
