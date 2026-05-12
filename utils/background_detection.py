@@ -103,8 +103,8 @@ def validate_background_detector(images_dict, saturation_threshold=0.15,
     for white background, '9' for noisy background).
 
     Args:
-        images_dict (dict): {filename: np.ndarray} as returned by
-                            load_image_subset / load_all_images.
+        images_dict (dict): {image_id: np.ndarray} as returned by
+                            load_image_subset / load_all_images / features=False.
         saturation_threshold (float): forwarded to detect_background_type.
         corner_size_ratio  (float)  : forwarded to detect_background_type.
         verbose (bool): if True, print every misclassified image.
@@ -117,9 +117,9 @@ def validate_background_detector(images_dict, saturation_threshold=0.15,
     total = 0
     misclassified = []
 
-    for filename, img in images_dict.items():
+    for image_id, img in images_dict.items():
         # Strip the .jpg extension to get the image id, then read the convention digit.
-        image_id = filename[:-4] if filename.endswith(".jpg") else filename
+        filename = image_id+".jpg" if not image_id.endswith(".jpg") else image_id
         digit = image_id[-3]
         if digit in ("7", "8"):
             true_label = "white"
