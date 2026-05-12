@@ -42,7 +42,10 @@ def segment_cards(img):
         mask (np.ndarray): boolean mask, True where cards are present.
     """
     # Convert to HSV for easier color-based thresholding
-    hsv = rgb2hsv(img / 255.0)
+    img_norm = img.astype(np.float32)
+    if img_norm.max() > 1.0:
+        img_norm = img_norm / 255.0
+    hsv = rgb2hsv(img_norm)
     val = hsv[:, :, 2]   # brightness channel
     sat = hsv[:, :, 1]   # saturation channel
  
@@ -51,45 +54,30 @@ def segment_cards(img):
     return mask
 
 def clean_mask(mask, close_radius=60, open_radius=5, min_blob_size=5000,
-               downsample=4):
-    """
-    Apply morphological closing and opening to the binary mask, then remove
-    small spurious blobs.
-
-    Morphology is done at 1/downsample resolution with OpenCV (much faster
-    than skimage on full-res images with large kernels), then upsampled back.
-
-    Args:
-        mask          (np.ndarray): boolean mask from segment_cards().
-        close_radius  (int)       : closing disk radius in full-res pixels.
-        open_radius   (int)       : opening disk radius in full-res pixels.
-        min_blob_size (int)       : minimum blob area to keep, in pixels.
-        downsample    (int)       : resolution reduction factor for morphology.
-
-    Returns:
-        cleaned (np.ndarray): cleaned boolean mask, full resolution.
-    """
+               downsample=4, pre_open_radius=0, pre_close_min_blob_size=0): 
     H, W = mask.shape
     sh, sw = H // downsample, W // downsample
-
     small = cv2.resize(mask.astype(np.uint8) * 255,
                        (sw, sh), interpolation=cv2.INTER_NEAREST)
 
-    r_close = max(1, close_radius // downsample)
-    r_open  = max(1, open_radius  // downsample)
+    r_pre   = max(0, pre_open_radius // downsample)    
+    r_close = max(1, close_radius    // downsample)
+    r_open  = max(1, open_radius     // downsample)
 
-    k_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
-                                        (2 * r_close + 1, 2 * r_close + 1))
-    k_open  = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
-                                        (2 * r_open  + 1, 2 * r_open  + 1))
+    if r_pre > 0:                                      
+        k_pre = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
+                                          (2*r_pre+1, 2*r_pre+1))
+        small = cv2.morphologyEx(small, cv2.MORPH_OPEN, k_pre)
 
-    closed = cv2.morphologyEx(small,  cv2.MORPH_CLOSE, k_close)
+    k_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*r_close+1, 2*r_close+1))
+    k_open  = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*r_open+1,  2*r_open+1))
+    
+    small_cleaned = remove_small_objects(small > 0, min_size=pre_close_min_blob_size).astype(np.uint8) * 255
+
+    closed = cv2.morphologyEx(small_cleaned,  cv2.MORPH_CLOSE, k_close)
     opened = cv2.morphologyEx(closed, cv2.MORPH_OPEN,  k_open)
-
-    full = cv2.resize(opened, (W, H), interpolation=cv2.INTER_NEAREST)
-
-    cleaned = remove_small_objects(full > 0, min_size=min_blob_size)
-    return cleaned
+    full   = cv2.resize(opened, (W, H), interpolation=cv2.INTER_NEAREST)
+    return remove_small_objects(full > 0, min_size=min_blob_size)
 
 def extract_blobs(cleaned_mask):
     """
@@ -112,7 +100,73 @@ def extract_blobs(cleaned_mask):
  
     return blobs, centroids_xy, areas
 
-def merge_blobs(blobs, centroids_xy, areas, merge_dist_ratio=0.20, img_width=None):
+# in utils/group_detect.py — alongside merge_blobs_by_label
+
+def filter_blobs_by_appearance(blobs, centroids_xy, areas, image,
+                               white_ratio_min=0.05):
+    """
+    Discard blobs that do not look like UNO cards in the original image.
+
+    The cleaned mask produced for noisy-background images can contain
+    card-sized false positives created by residuals of the leaf pattern
+    where the reference background does not perfectly match the input
+    (e.g. slight camera-position drift between the reference shots and
+    the test image). These false positives survive size-based filtering
+    because they are roughly card-shaped and card-sized; what they lack
+    is the *appearance* of an UNO card.
+
+    Real UNO cards have a thick white border, which gives them a
+    measurable fraction of pixels that are simultaneously very bright
+    and very low-saturation in the original RGB image
+    (`val > 0.85 AND sat < 0.15`). Leaf-pattern blobs have virtually
+    none. We use this single, robust feature to keep only "card-like"
+    blobs.
+
+    Args:
+        blobs        (list)      : RegionProperties returned by
+                                   `extract_blobs()` on the cleaned mask.
+        centroids_xy (np.ndarray): (N, 2) centroid coordinates from
+                                   `extract_blobs()`.
+        areas        (np.ndarray): (N,) blob areas from `extract_blobs()`.
+        image        (np.ndarray): original RGB image (uint8 in [0, 255]
+                                   or float in [0, 1]). Sampled inside
+                                   each blob's pixel set, NOT the
+                                   bounding box, so neighbouring leaves
+                                   do not bias the score.
+        white_ratio_min (float)  : minimum fraction of white-border-like
+                                   pixels (default 0.05) for a blob to
+                                   be kept. Lower values are more
+                                   permissive.
+
+    Returns:
+        kept_blobs        (list)       : surviving blobs (subset of input).
+        kept_centroids_xy (np.ndarray) : matching centroids,
+                                         shape (K, 2) with K <= N.
+        kept_areas        (np.ndarray) : matching areas, shape (K,).
+    """
+    img = image.astype(np.float32)
+    if img.max() > 1.0:
+        img = img / 255.0
+
+    keep = []
+    for i, blob in enumerate(blobs):
+        coords  = blob.coords                    # (Npx, 2) (row, col)
+        pixels  = img[coords[:, 0], coords[:, 1]]  # (Npx, 3) RGB
+        hsv     = rgb2hsv(pixels[None, :, :])[0]   # (Npx, 3) HSV
+        val, sat = hsv[:, 2], hsv[:, 1]
+        white_ratio = float(((val > 0.85) & (sat < 0.15)).mean())
+        if white_ratio >= white_ratio_min:
+            keep.append(i)
+
+    if not keep:
+        return [], np.empty((0, 2)), np.empty(0)
+
+    keep = np.array(keep, dtype=int)
+    return ([blobs[i] for i in keep],
+            centroids_xy[keep],
+            areas[keep])
+
+def merge_blobs(blobs, centroids_xy, areas, merge_dist_ratio=0.20, img_width=None, img_height=None):
     """
     Group blobs whose centroids are closer than a distance threshold.
  
@@ -174,7 +228,7 @@ def merge_blobs(blobs, centroids_xy, areas, merge_dist_ratio=0.20, img_width=Non
         cy = np.average(centroids_xy[idxs, 1], weights=w)
  
         # Assign a semantic label based on position in the image
-        lbl = assign_label(cx, cy, img_width)
+        lbl = assign_label(cx, cy, img_width, img_height)
  
         # Enclosing bbox: smallest box that covers all blobs in the cluster
         minr = min(blobs[i].bbox[0] for i in idxs)
@@ -187,40 +241,64 @@ def merge_blobs(blobs, centroids_xy, areas, merge_dist_ratio=0.20, img_width=Non
  
     return group_centroids, group_bboxes
 
+def merge_blobs_by_label(blobs, centroids_xy, areas, img_width, img_height):
+    """
+    Group blobs by the semantic label of their centroid (player_1..4 / center).
+    Unlike merge_blobs, this can never merge blobs across different player
+    regions, which makes it robust to fragmented masks where small sub-blobs
+    of different players might lie within a few hundred pixels of each other.
+    """
+    clusters = defaultdict(list)
+    for i, (cx, cy) in enumerate(centroids_xy):
+        lbl = assign_label(cx, cy, img_width, img_height)
+        clusters[lbl].append(i)
+
+    group_centroids, group_bboxes = {}, {}
+    for lbl, idxs in clusters.items():
+        w = areas[idxs]
+        cx = np.average(centroids_xy[idxs, 0], weights=w)
+        cy = np.average(centroids_xy[idxs, 1], weights=w)
+        minr = min(blobs[i].bbox[0] for i in idxs)
+        minc = min(blobs[i].bbox[1] for i in idxs)
+        maxr = max(blobs[i].bbox[2] for i in idxs)
+        maxc = max(blobs[i].bbox[3] for i in idxs)
+        group_centroids[lbl] = (cx, cy)
+        group_bboxes[lbl]    = (minr, minc, maxr, maxc)
+    return group_centroids, group_bboxes
+
 def assign_label(cx, cy, img_width, img_height=None):
     """
     Map a centroid (cx, cy) to one of five semantic labels based on its
-    relative position in the image.
- 
-    Layout convention (standard UNO top-down photo):
-      - player_1 : top    (rel_y < 0.35)
-      - player_2 : left   (rel_x < 0.35)
-      - player_3 : bottom (rel_y > 0.65)
-      - player_4 : right  (rel_x > 0.65)
+    position in the image.
+
+    Layout convention (top-down photo of an UNO game):
+      - player_1 : bottom (rel_y > 0.65)
+      - player_2 : right  (rel_x > 0.65)
+      - player_3 : top    (rel_y < 0.35)
+      - player_4 : left   (rel_x < 0.35)
       - center   : middle (0.30 < rel_x < 0.70 AND 0.30 < rel_y < 0.70)
- 
+
     Args:
-        cx         (float): centroid x coordinate in pixels.
-        cy         (float): centroid y coordinate in pixels.
-        img_width  (int)  : image width in pixels.
-        img_height (int)  : image height in pixels (estimated from cy if None).
- 
+        cx, cy            : centroid coordinates in pixels.
+        img_width         : image width  in pixels.
+        img_height        : image height in pixels (estimated from cy if None).
+
     Returns:
-        label (str): one of 'player_1', 'player_2', 'player_3', 'player_4', 'center'.
+        str : one of 'player_1'..'player_4', 'center'.
     """
-    H      = img_height if img_height is not None else cy * 2
-    rel_x  = cx / img_width
-    rel_y  = cy / H
- 
+    H     = img_height if img_height is not None else cy * 2
+    rel_x = cx / img_width
+    rel_y = cy / H
+
     if 0.30 < rel_x < 0.70 and 0.30 < rel_y < 0.70:
         return "center"
-    if rel_y < 0.35:
-        return "player_1"
     if rel_y > 0.65:
+        return "player_1"
+    if rel_y < 0.35:
         return "player_3"
     if rel_x < 0.35:
-        return "player_2"
-    return "player_4"
+        return "player_4"
+    return "player_2"
 
 
 def crop_regions(img, group_bboxes):
@@ -239,48 +317,103 @@ def crop_regions(img, group_bboxes):
         regions[lbl] = img[minr:maxr, minc:maxc]
     return regions
 
-def segment_cards_noisy_background(img, plot=False):
-    """
-    Produce a binary mask that isolates UNO cards from the noisy background.
- 
-    Strategy: after background subtraction, we can use HSV color space to separate the cards from the background.
-    Cards have high saturation and value, while the background is more desaturated and darker. 
-    We can use quantiles to set adaptive thresholds for saturation and value, creating a mask that highlights the cards.
- 
-    Args:
-        img (np.ndarray): RGB image, shape (H, W, 3), values in [0, 1].
-        plot (bool): If True, display the background-subtracted image and the resulting mask side by side for debugging.
- 
-    Returns:
-        mask (np.ndarray): boolean mask, True where cards are present.
-    """
-    # Check if the input image is normalized to the range [0, 1]
+def segment_cards_noisy_background(img, val_quantile=0.90, sat_quantile=0.05, plot=False):
     if img.max() > 1.0:
-        print("Warning: Input image should be normalized to the range [0, 1]. Normalizing now.")
         img = img / 255.0
-    
-    # Convert RGB to HSV color space
-    hsv_img = rgb2hsv(img)
-    
-    sat = hsv_img[:, :, 1]
-    val = hsv_img[:, :, 2]
-
-    # Thresholds for hsv
-    saturation_threshold = np.quantile(sat, 0.05)
-    value_threshold = np.quantile(val, 0.80)
-
-    # Create a mask based on the thresholds
+    hsv = rgb2hsv(img)
+    sat, val = hsv[:, :, 1], hsv[:, :, 2]
+    saturation_threshold = np.quantile(sat, sat_quantile)
+    value_threshold      = np.quantile(val, val_quantile)
     mask = (sat > saturation_threshold) & (val > value_threshold)
-    
-    if plot:
-        fig, axes = plt.subplots(1, 2, figsize=(18, 6))
-        axes[0].imshow(img)
-        axes[1].imshow(mask)
-        axes[0].set_title("Background Subtracted Image")
-        axes[1].set_title("Segmented Mask")
-        for ax in axes:
-            ax.axis("off")
-        plt.tight_layout()
-        plt.show()
-
+    # (plot block unchanged)
     return mask
+
+# Per-background-type cleaning recipes — single source of truth.
+CLEAN_PARAMS = {
+    "white": dict(close_radius=60, open_radius=5,  min_blob_size=5000, pre_open_radius=0),
+    "noisy": dict(close_radius=30, open_radius=2,  min_blob_size=5000, pre_open_radius=24),
+}
+
+
+PIPELINE_PARAMS = {
+    "white": {
+        "seg_kwargs":   {},
+        "clean_kwargs": dict(close_radius=60, open_radius=5, min_blob_size=5000,
+                             pre_open_radius=0),
+    },
+    "noisy": {
+        "seg_kwargs":   dict(val_quantile=0.90, sat_quantile=0.05),
+        "clean_kwargs": dict(close_radius=80, open_radius=2, min_blob_size=5000,
+                            pre_open_radius=4, pre_close_min_blob_size=50),
+    },
+}
+
+def detect_groups(image, bg_type, preprocessed=None):
+    """
+    Step 3 of the pipeline: turn an image (and its background-subtracted
+    version, if any) into a `{label: bbox}` dictionary covering the five
+    regions of interest (`player_1..4`, `center`).
+
+    Dispatches on `bg_type` and applies the segmentation/cleaning recipe
+    in `PIPELINE_PARAMS`. For the noisy path, a post-segmentation
+    appearance filter (`filter_blobs_by_appearance`) discards card-sized
+    blobs that lack the white-border signature of an UNO card —
+    typically caused by residuals of the leaf pattern when the reference
+    background is slightly misaligned with the input. The white path
+    skips this filter because its segmentation already excludes the
+    grey table by saturation alone.
+
+    Connected components are then grouped by spatial label using
+    `merge_blobs_by_label`, which assigns each blob to one of
+    `player_1..4` or `center` and unions the bounding boxes per label.
+
+    Args:
+        image (np.ndarray)        : original RGB image, uint8 in [0, 255].
+                                    Used directly for the white path and
+                                    as the appearance reference for the
+                                    noisy filter.
+        bg_type (str)             : 'white' or 'noisy', as returned by
+                                    `detect_background_type`.
+        preprocessed (np.ndarray) : background-subtracted image, float in
+                                    [0, 1]. Required when bg_type ==
+                                    'noisy'; ignored for the white path.
+
+    Returns:
+        group_centroids (dict)        : {label: (cx, cy)} area-weighted
+                                        centroid of each detected region.
+        group_bboxes    (dict)        : {label: (minr, minc, maxr, maxc)}
+                                        bounding box of each detected region.
+        cleaned_mask    (np.ndarray)  : boolean mask after morphology and
+                                        small-object filtering. Kept around
+                                        because step 5 (GHT) consumes it.
+    """
+    p = PIPELINE_PARAMS[bg_type]
+
+    if bg_type == "white":
+        mask = segment_cards(image)
+    elif bg_type == "noisy":
+        if preprocessed is None:
+            raise ValueError("`preprocessed` is required for noisy backgrounds.")
+        mask = segment_cards_noisy_background(preprocessed, **p["seg_kwargs"])
+    else:
+        raise ValueError(f"Unknown bg_type: {bg_type!r}. "
+                         "Expected 'white' or 'noisy'.")
+
+    cleaned = clean_mask(mask, **p["clean_kwargs"])
+
+    blobs, centroids_xy, areas = extract_blobs(cleaned)
+    if len(blobs) == 0:
+        return {}, {}, cleaned
+
+    if bg_type == "noisy":
+        blobs, centroids_xy, areas = filter_blobs_by_appearance(
+            blobs, centroids_xy, areas, image, white_ratio_min=0.05
+        )
+        if len(blobs) == 0:
+            return {}, {}, cleaned
+
+    H, W = cleaned.shape
+    group_centroids, group_bboxes = merge_blobs_by_label(
+        blobs, centroids_xy, areas, img_width=W, img_height=H,
+    )
+    return group_centroids, group_bboxes, cleaned
