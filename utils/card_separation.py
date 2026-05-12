@@ -155,7 +155,7 @@ def ght_accumulate(contour_img, card_w, card_h, angles_deg, n_pts=80,
                    blob_mask=None, n_angle_bins=8, scales=None):
     """
     Accumulate votes in 2D Hough space using the R-table with
-    gradient-direction filtering and multi-scale support.
+    gradient-direction filtering and anisotropic multi-scale support.
 
     Gradient filtering: each contour pixel votes only with the r_vecs
     whose gradient angle matches its own (±1 bin + opposite 180° bin).
@@ -164,6 +164,10 @@ def ght_accumulate(contour_img, card_w, card_h, angles_deg, n_pts=80,
     Multi-scale: the inner loop runs over every (scale, angle) pair so
     that cards closer or farther from the camera still produce strong peaks
     even if their true size differs from the nominal card_w × card_h.
+
+    Anisotropic scaling: scales can contain (sw, sh) tuples to test
+    independent width/height multipliers, which helps distinguish the
+    second card in overlapping pairs from false 90°-rotated half-card peaks.
 
     Args:
         contour_img   (np.ndarray): uint8 outer contour, shape (H, W).
@@ -174,25 +178,32 @@ def ght_accumulate(contour_img, card_w, card_h, angles_deg, n_pts=80,
                                     Used for clean Sobel gradients.
                                     Falls back to contour_img if None.
         n_angle_bins  (int)       : gradient direction bins (default 8 = 45°/bin).
-        scales        (list)      : scale multipliers to test, e.g. [0.8, 1.0, 1.2].
-                                    Defaults to [1.0] (fixed size, backward compat).
+        scales        (list)      : scale multipliers to test. Each entry can be:
+                                    - float s   → isotropic (s, s)
+                                    - (sw, sh)  → anisotropic width/height scales
+                                    Defaults to [(1.0, 1.0)] (fixed size).
 
     Returns:
-        acc_norm       (np.ndarray): normalized accumulator [0-1], shape (H, W).
-        best_angle_map (np.ndarray): float32, best card angle (degrees) per pixel.
-        best_scale_map (np.ndarray): float32, best scale multiplier per pixel.
+        acc_norm        (np.ndarray): normalized accumulator [0-1], shape (H, W).
+        best_angle_map  (np.ndarray): float32, best card angle (degrees) per pixel.
+        best_scale_w_map(np.ndarray): float32, best width scale per pixel.
+        best_scale_h_map(np.ndarray): float32, best height scale per pixel.
     """
     if scales is None:
         scales = [1.0]
 
+    # Normalize: convert scalar scales to (sw, sh) tuples
+    norm_scales = [(s, s) if isinstance(s, (int, float)) else tuple(s) for s in scales]
+
     rh, rw = contour_img.shape
-    acc            = np.zeros((rh, rw), dtype=np.float32)
-    best_angle_map = np.zeros((rh, rw), dtype=np.float32)
-    best_scale_map = np.ones((rh, rw),  dtype=np.float32)
+    acc              = np.zeros((rh, rw), dtype=np.float32)
+    best_angle_map   = np.zeros((rh, rw), dtype=np.float32)
+    best_scale_w_map = np.ones((rh, rw),  dtype=np.float32)
+    best_scale_h_map = np.ones((rh, rw),  dtype=np.float32)
 
     ys, xs = np.where(contour_img > 0)
     if len(xs) == 0:
-        return acc, best_angle_map, best_scale_map
+        return acc, best_angle_map, best_scale_w_map, best_scale_h_map
 
     # Gradient angles at contour pixels — computed from the filled blob mask
     # (bright region on black) for clean inward-pointing normals.
@@ -208,9 +219,9 @@ def ght_accumulate(contour_img, card_w, card_h, angles_deg, n_pts=80,
     p_bins   = np.floor((pixel_grad + np.pi) / bin_size).astype(int) % n_angle_bins
     half     = n_angle_bins // 2
 
-    for scale in scales:
-        w = int(card_w * scale)
-        h = int(card_h * scale)
+    for sw, sh in norm_scales:
+        w = int(card_w * sw)
+        h = int(card_h * sh)
 
         for angle_deg in angles_deg:
             r_vecs, r_grad_angles = build_r_vectors(w, h, angle_deg, n_pts)
@@ -242,17 +253,18 @@ def ght_accumulate(contour_img, card_w, card_h, angles_deg, n_pts=80,
                 np.add.at(acc_angle, (cy_all[valid], cx_all[valid]), 1.0)
 
             improved = acc_angle > acc
-            acc[improved]            = acc_angle[improved]
-            best_angle_map[improved] = angle_deg
-            best_scale_map[improved] = scale
+            acc[improved]              = acc_angle[improved]
+            best_angle_map[improved]   = angle_deg
+            best_scale_w_map[improved] = sw
+            best_scale_h_map[improved] = sh
 
     acc = cv2.GaussianBlur(acc, (21, 21), 0)
     acc_norm = acc / (acc.max() + 1e-8)
-    return acc_norm, best_angle_map, best_scale_map
+    return acc_norm, best_angle_map, best_scale_w_map, best_scale_h_map
 
 
 def find_peaks(acc_norm, best_angle_map, n_cards, card_w, card_h,
-               threshold=0.25, best_scale_map=None):
+               threshold=0.25, best_scale_w_map=None, best_scale_h_map=None):
     """
     Extract card center positions from the accumulator via greedy
     non-maximum suppression.
@@ -265,16 +277,17 @@ def find_peaks(acc_norm, best_angle_map, n_cards, card_w, card_h,
       4. Repeat until n_cards found or score drops below threshold.
 
     Args:
-        acc_norm       (np.ndarray): normalized accumulator from ght_accumulate().
-        best_angle_map (np.ndarray): angle at max vote, from ght_accumulate().
-        n_cards        (int)       : expected number of cards in this blob.
-        card_w/h       (int)       : nominal card dimensions (suppression radius).
-        threshold      (float)     : min score to accept a detection [0-1].
-        best_scale_map (np.ndarray): optional scale at max vote, from ght_accumulate().
+        acc_norm         (np.ndarray): normalized accumulator from ght_accumulate().
+        best_angle_map   (np.ndarray): angle at max vote, from ght_accumulate().
+        n_cards          (int)       : expected number of cards in this blob.
+        card_w/h         (int)       : nominal card dimensions (suppression radius).
+        threshold        (float)     : min score to accept a detection [0-1].
+        best_scale_w_map (np.ndarray): optional width scale at max vote.
+        best_scale_h_map (np.ndarray): optional height scale at max vote.
 
     Returns:
-        peaks (list): [(px, py, angle_deg, scale, score), ...] in crop coordinates.
-                      scale is 1.0 if best_scale_map is not provided.
+        peaks (list): [(px, py, angle_deg, scale_w, scale_h, score), ...] in crop coordinates.
+                      scale_w/scale_h are 1.0 when the respective map is not provided.
     """
     rh, rw   = acc_norm.shape
     min_dist = int(min(card_w, card_h) * 0.4)
@@ -288,8 +301,9 @@ def find_peaks(acc_norm, best_angle_map, n_cards, card_w, card_h,
         if score < threshold:
             break
         angle_deg = float(best_angle_map[py, px])
-        scale     = float(best_scale_map[py, px]) if best_scale_map is not None else 1.0
-        peaks.append((int(px), int(py), angle_deg, scale, score))
+        scale_w   = float(best_scale_w_map[py, px]) if best_scale_w_map is not None else 1.0
+        scale_h   = float(best_scale_h_map[py, px]) if best_scale_h_map is not None else 1.0
+        peaks.append((int(px), int(py), angle_deg, scale_w, scale_h, score))
 
         y0, y1 = max(0, py - min_dist), min(rh, py + min_dist)
         x0, x1 = max(0, px - min_dist), min(rw, px + min_dist)
@@ -318,7 +332,7 @@ def detect_cards_in_blob(blob, labeled, img_shape, card_w, card_h,
                       Defaults to [1.0] (fixed size).
 
     Returns:
-        cards       (list)      : [(cx, cy, angle_deg, scale, score), ...] in full image coords.
+        cards       (list)      : [(cx, cy, angle_deg, scale_w, scale_h, score), ...] in full image coords.
         acc_norm    (np.ndarray): normalized accumulator for visualization.
         contour_img (np.ndarray): outer contour image used as input.
         offset      (tuple)     : (off_x, off_y) for coordinate conversion.
@@ -329,15 +343,17 @@ def detect_cards_in_blob(blob, labeled, img_shape, card_w, card_h,
 
     angles_deg = np.linspace(-90, 90, n_angles, endpoint=False).tolist()
 
-    acc_norm, best_angle_map, best_scale_map = ght_accumulate(
+    acc_norm, best_angle_map, best_scale_w_map, best_scale_h_map = ght_accumulate(
         contour_img, card_w, card_h, angles_deg, n_pts,
         blob_mask=blob_mask, scales=scales)
 
     peaks = find_peaks(acc_norm, best_angle_map, n_cards, card_w, card_h,
-                       threshold, best_scale_map=best_scale_map)
+                       threshold, best_scale_w_map=best_scale_w_map,
+                       best_scale_h_map=best_scale_h_map)
 
     # Convert from crop coordinates to full image coordinates
-    cards = [(px + off_x, py + off_y, ang, s, sc) for px, py, ang, s, sc in peaks]
+    cards = [(px + off_x, py + off_y, ang, sw, sh, sc)
+             for px, py, ang, sw, sh, sc in peaks]
 
     return cards, acc_norm, contour_img, (off_x, off_y)
  
