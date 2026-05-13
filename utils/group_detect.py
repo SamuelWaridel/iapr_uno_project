@@ -53,7 +53,7 @@ def segment_cards(img):
     mask = (val > 0.75) & ~((sat < 0.08) & (val > 0.80))
     return mask
 
-def clean_mask(mask, close_radius=60, open_radius=5, min_blob_size=5000,
+def clean_mask(mask, close_radius=120, open_radius=5, min_blob_size=5000,
                downsample=4, pre_open_radius=0, pre_close_min_blob_size=0): 
     H, W = mask.shape
     sh, sw = H // downsample, W // downsample

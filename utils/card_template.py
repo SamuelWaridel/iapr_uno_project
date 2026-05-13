@@ -171,10 +171,8 @@ def _extract_inner_contours(card_rgb, white_sat_max=0.25, white_val_min=0.70,
     all_contours, _ = cv2.findContours(white_bin, cv2.RETR_LIST,
                                        cv2.CHAIN_APPROX_NONE)
     if len(all_contours) < 3:
-        # Fallback: return all contours if fewer than 3 exist
         kept = list(all_contours)
     else:
-        # Sort by arc length descending; skip [0], take [1] and [2]
         sorted_c = sorted(all_contours,
                           key=lambda c: cv2.arcLength(c, True), reverse=True)
         kept = sorted_c[1:3]
