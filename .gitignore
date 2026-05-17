@@ -219,3 +219,5 @@ __marimo__/
 
 # Data in order to keep the repository clean and avoid uploading large files to GitHub.
 data/
+
+.pkl
