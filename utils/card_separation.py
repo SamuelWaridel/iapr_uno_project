@@ -488,5 +488,31 @@ def detect_cards_in_blob(blob, labeled, img_shape, card_w, card_h,
 
     return cards, acc_norm, feature_img, (off_x, off_y)
  
-
+def extract_card_crops(image, cards_with_groups):
+    """Extract oriented bounding box crops of detected cards from the original image.
+    Args:
+        image (np.ndarray): (H, W, 3) uint8 original image.
+        cards_with_groups (dict): {player: [(cx, cy, angle_deg, sw, sh, sc), ...], ...}
+    Returns:
+        dict_card_crops (dict): {player: [crop1, crop2, ...], ...], ...}
+    """
+    dict_card_crops = {}
+    for player, card_list in cards_with_groups.items():
+        crops = []
+        for card in card_list:
+            cx, cy, ang, sw, sh, sc = card
+            hw = int(CARD_W * sw // 2)
+            hh = int(CARD_H * sh // 2)
+            corners_loc = np.array([[-hw,-hh],[hw,-hh],[hw,hh],[-hw,hh]], dtype=np.float32)
+            a = np.deg2rad(ang)
+            ca, sa = np.cos(a), np.sin(a)
+            corners = ((np.array([[ca,-sa],[sa,ca]]) @ corners_loc.T).T
+                       + np.array([cx, cy])).astype(np.int32)
+            min_x, min_y = corners.min(axis=0)
+            max_x, max_y = corners.max(axis=0)
+            crop = image[max(0, min_y):min(image.shape[0], max_y),
+                         max(0, min_x):min(image.shape[1], max_x)]
+            crops.append(crop)
+        dict_card_crops[player] = crops
+    return dict_card_crops
 

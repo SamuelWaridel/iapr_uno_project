@@ -3,6 +3,7 @@ from skimage.color import rgb2hsv
 from collections import defaultdict
 import matplotlib.pyplot as plt
 from utils.group_detect import *
+from utils.card_separation import CARD_H, CARD_W
 
 
 def blob_bbox(blobs, centroids_xy, areas):
@@ -198,3 +199,48 @@ def detect_card_color_from_group_image(group_img, color_detection_tolerance=0.25
     
     return
     
+    
+def color_from_ellipse(img, cx, cy, ang, sw, sh,
+                         sat_thresh=0.20, tolerance=0.35):
+    """Detects the color of a card based on the mean of each channel in the colored portion of the card.
+    The region of interest is determined based on the quantile of the ratio in each channel.
+
+    Args:
+        img (numpy.ndarray): The input image of the card. Must be a 3-channel RGB image.
+        cx (float): The x-coordinate of the center of the card.
+        cy (float): The y-coordinate of the center of the card.
+        ang (float): The angle of the card.
+        sw (float): The scale factor for the width of the card.
+        sh (float): The scale factor for the height of the card.
+        sat_thresh (float, optional): The threshold for saturation. Defaults to 0.20.
+        tolerance (float, optional): The tolerance for color determination. Defaults to 0.35.
+
+    Returns:
+        str: The determined card color.
+    """
+    H, W = img.shape[:2]
+
+    a_w = max(1, int(CARD_W * sw * 0.22))   # ← changer ici pour tester
+    a_h = max(1, int(CARD_H * sh * 0.28))   # ← changer ici pour tester
+    mask = np.zeros((H, W), dtype=np.uint8)
+    cv2.ellipse(mask, (int(cx), int(cy)), (a_w, a_h), ang, 0, 360, 255, -1)
+
+    pixels = img[mask > 0].astype(np.float32)
+    if len(pixels) == 0:
+        return "unknown"
+
+    cmax = pixels.max(axis=1)
+    cmin = pixels.min(axis=1)
+    sat  = (cmax - cmin) / (cmax + 1e-8)
+    sel  = sat > sat_thresh
+
+    if sel.sum() < 20:
+        return "unknown"
+
+    r = pixels[sel, 0]; g = pixels[sel, 1]; b = pixels[sel, 2]
+    means = {
+        "r/g": float(np.mean(r / (g + 1e-8))),
+        "r/b": float(np.mean(r / (b + 1e-8))),
+        "g/b": float(np.mean(g / (b + 1e-8))),
+    }
+    return determine_card_color(means, tolerance=tolerance)
