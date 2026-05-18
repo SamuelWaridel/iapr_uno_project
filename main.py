@@ -109,12 +109,10 @@ for img_id, feat in tqdm(features.items(), desc="Processing images ..."):
             })
             
             cards_with_groups.setdefault(player, []).append(entry)
-            feat["card"][player] = cards_with_groups[player]
 
     feat["detected_cards"] = all_cards
     feat["cards"]          = cards_list
     feat["cards_with_groups"]  = cards_with_groups
-    feat["card_crops_by_group"] = extract_card_crops(feat["image"], cards_with_groups)
 
     # Step 6 — Card color detection
     img = feat["image"]
