@@ -18,6 +18,8 @@ from utils.load_and_background_subtract import *
 from utils.background_detection import *
 from utils.token_detect import *
 from utils.card_separation import *
+from utils.number_prediction import *
+from utils.save_csv import make_submission_csv
 
 DATA_DIR  = "data/train_images"
 TRAIN_CSV = "data/train.csv"
@@ -93,6 +95,7 @@ for img_id, feat in tqdm(features.items(), desc="Processing images ..."):
         )
         all_cards.extend(cards)
         for cx, cy, ang, sw, sh, sc in cards:
+            entry = (cx, cy, ang, sw, sh, sc)
             cards_list.append({
                 "cx":         cx,
                 "cy":         cy,
@@ -102,10 +105,11 @@ for img_id, feat in tqdm(features.items(), desc="Processing images ..."):
                 "score":      sc,
                 "player":     player,
                 "blob_label": blob.label,
+                "crop":       extract_card_crops(rgb_img, entry)
             })
             
-            entry = (cx, cy, ang, sw, sh, sc)
             cards_with_groups.setdefault(player, []).append(entry)
+            feat["card"][player] = cards_with_groups[player]
 
     feat["detected_cards"] = all_cards
     feat["cards"]          = cards_list
@@ -124,12 +128,29 @@ for img_id, feat in tqdm(features.items(), desc="Processing images ..."):
 
     feat["cards"] = [c for c in feat["cards"] if c["color"] != "unknown"]
     
-# Step 7 — Card number detection (not implemented yet)
-    tqdm.write("Detecting card numbers ...")
-## TODO: number detection (not implemented yet)
+    # Step 7 — Card number detection (not implemented yet)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = load_number_prediction_model("src/models/bad_uno_cnn_final.pth", device)
+    _, test_transform = make_train_test_transforms()
+    
+    for card in tqdm(feat["cards"], desc="Detecting card numbers", leave=False):
+        crop = card["crop"]
+        crop = Image.fromarray(np.array(crop, dtype=np.uint8))
+        crop = test_transform(crop).unsqueeze(0).to(device)
+
+        with torch.no_grad():
+            output = model(crop)
+            pred_idx = output.argmax(dim=1).item()
+            pred_label = idx_to_label[pred_idx]
+
+        card["predicted_label"] = pred_label
+        card["full_label"] = card["color_prefix"] + pred_label
+
 
 tqdm.write("---------------------------------------------------------")
 
 # Save the extracted features for later use (e.g., for training a classifier or generating the submission file)
-with open("features_test.pkl", "wb") as f:
+with open("train_features.pkl", "wb") as f:
     pickle.dump(features, f)
+    
+make_submission_csv(features, "submission.csv")
