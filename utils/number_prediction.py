@@ -9,7 +9,7 @@ from PIL import Image
 from torchvision import transforms
 from utils.card_separation import CARD_W, CARD_H
 
-def get_x_and_y(features, labels_df):
+def get_x_and_y(features, labels_df, crop_center = False):
     zones = ["center", "player_1", "player_2", "player_3", "player_4"]
 
     data = []
@@ -28,11 +28,15 @@ def get_x_and_y(features, labels_df):
             
             if len(new_labels) != 1:
                 # skip if there is more than one card
-                break
+                continue
             else:
                 for card in feat["cards"]:
                     if card["player"] == zone:
                         crop = card["crop"]
+                        if crop_center:
+                            h, w, _ = crop.shape
+                            center_crop = crop[int(h*0.2):int(h*0.8), int(w*0.2):int(w*0.8)]
+                            crop = center_crop
                         data.append((img_id, zone, crop, new_labels[0]))
                         break
 
@@ -108,26 +112,64 @@ class UnoCNN(nn.Module):
 
         self.features = nn.Sequential(
 
-            nn.Conv2d(3, 32, 3, padding=1),
+            # Block 1
+            nn.Conv2d(1, 32, 3, padding=1),
+            nn.BatchNorm2d(32),
             nn.ReLU(),
-            nn.MaxPool2d(2),
 
+            nn.Conv2d(32, 32, 3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+
+            nn.MaxPool2d(2),
+            nn.Dropout2d(0.1),
+
+            # Block 2
             nn.Conv2d(32, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
             nn.ReLU(),
+
+            nn.Conv2d(64, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+
             nn.MaxPool2d(2),
+            nn.Dropout2d(0.15),
 
+            # Block 3
             nn.Conv2d(64, 128, 3, padding=1),
+            nn.BatchNorm2d(128),
             nn.ReLU(),
 
-            nn.AdaptiveAvgPool2d(1)
+            nn.Conv2d(128, 128, 3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+
+            nn.MaxPool2d(2),
+            nn.Dropout2d(0.2),
+
+            # Block 4
+            nn.Conv2d(128, 256, 3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(),
+
+            nn.Conv2d(256, 256, 3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(),
+
+            nn.AdaptiveAvgPool2d((4, 4))
         )
 
         self.classifier = nn.Sequential(
+
             nn.Flatten(),
 
-            nn.Linear(128, 128),
+            nn.Linear(256 * 4 * 4, 512),
             nn.ReLU(),
+            nn.Dropout(0.5),
 
+            nn.Linear(512, 128),
+            nn.ReLU(),
             nn.Dropout(0.3),
 
             nn.Linear(128, n_classes)
@@ -221,31 +263,57 @@ def load_number_prediction_model(model_path, device):
 def make_train_test_transforms():
     
     train_transform = transforms.Compose([
+        
+        transforms.Grayscale(num_output_channels=1),
+        
         transforms.Resize((CARD_W, CARD_H)),
 
-        transforms.RandomRotation(10),
-        transforms.ColorJitter(
-            brightness=0.2,
-            contrast=0.2,
-            saturation=0.2
+        transforms.RandomAffine(
+            degrees=15,
+            translate=(0.08, 0.08),
+            scale=(0.9, 1.1),
+            shear=5
         ),
+
+        #transforms.RandomPerspective(
+        #    distortion_scale=0.2,
+        #    p=0.3
+        #),
+
+        #transforms.GaussianBlur(
+        #    kernel_size=3,
+        #    sigma=(0.1, 1.5)
+        #),
+
+        #transforms.ColorJitter(
+        #    brightness=0.3,
+        #    contrast=0.3
+        #),
 
         transforms.ToTensor(),
 
         transforms.Normalize(
-            mean=[0.5, 0.5, 0.5],
-            std=[0.5, 0.5, 0.5]
-        )
+            mean=[0.5],
+            std=[0.5]
+        ),
+        
+        #transforms.RandomErasing(
+        #    p=0.5,
+        #    scale=(0.02, 0.2),
+        #    ratio=(0.3, 3.3)
+        #)
     ])
 
     test_transform = transforms.Compose([
+        transforms.Grayscale(num_output_channels=1),
+        
         transforms.Resize((CARD_W, CARD_H)),
         transforms.ToTensor(),
 
         transforms.Normalize(
-            mean=[0.5, 0.5, 0.5],
-            std=[0.5, 0.5, 0.5]
-        )
+            mean=[0.5],
+            std=[0.5]
+        ),
     ])
     
     return train_transform, test_transform

@@ -107,14 +107,9 @@ for img_id, feat in tqdm(features.items(), desc="Processing images ..."):
                 "blob_label": blob.label,
                 "crop":       extract_card_crops(rgb_img, entry)
             })
-            
-            cards_with_groups.setdefault(player, []).append(entry)
-            feat["card"][player] = cards_with_groups[player]
 
     feat["detected_cards"] = all_cards
     feat["cards"]          = cards_list
-    feat["cards_with_groups"]  = cards_with_groups
-    feat["card_crops_by_group"] = extract_card_crops(feat["image"], cards_with_groups)
 
     # Step 6 — Card color detection
     img = feat["image"]
@@ -128,23 +123,23 @@ for img_id, feat in tqdm(features.items(), desc="Processing images ..."):
 
     feat["cards"] = [c for c in feat["cards"] if c["color"] != "unknown"]
     
-    # Step 7 — Card number detection (not implemented yet)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = load_number_prediction_model("src/models/bad_uno_cnn_final.pth", device)
-    _, test_transform = make_train_test_transforms()
+    # Step 7 — Card number detection (commented for storing because takes up too much ram)
+    #device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    #model = load_number_prediction_model("src/models/bad_uno_cnn_final.pth", device)
+    #_, test_transform = make_train_test_transforms()
     
-    for card in tqdm(feat["cards"], desc="Detecting card numbers", leave=False):
-        crop = card["crop"]
-        crop = Image.fromarray(np.array(crop, dtype=np.uint8))
-        crop = test_transform(crop).unsqueeze(0).to(device)
+    #for card in tqdm(feat["cards"], desc="Detecting card numbers", leave=False):
+    #    crop = card["crop"]
+    #    crop = Image.fromarray(np.array(crop, dtype=np.uint8))
+    #    crop = test_transform(crop).unsqueeze(0).to(device)
 
-        with torch.no_grad():
-            output = model(crop)
-            pred_idx = output.argmax(dim=1).item()
-            pred_label = idx_to_label[pred_idx]
+    #    with torch.no_grad():
+    #        output = model(crop)
+    #        pred_idx = output.argmax(dim=1).item()
+    #        pred_label = idx_to_label[pred_idx]
 
-        card["predicted_label"] = pred_label
-        card["full_label"] = card["color_prefix"] + pred_label
+    #    card["predicted_label"] = pred_label
+    #    card["full_label"] = card["color_prefix"] + pred_label
 
 
 tqdm.write("---------------------------------------------------------")
@@ -153,4 +148,4 @@ tqdm.write("---------------------------------------------------------")
 with open("train_features.pkl", "wb") as f:
     pickle.dump(features, f)
     
-make_submission_csv(features, "submission.csv")
+make_submission_csv(features, "train_submission.csv")
