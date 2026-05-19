@@ -1,6 +1,27 @@
 import pandas as pd
 
 def make_submission_csv(features, output_path="predicted_labels.csv"):
+    """
+    Creates a csv file for submission to kaggle.
+
+    Args:
+        features (dict): A dictionary containing image IDs as keys and feature dictionaries as values.
+            Global structure of the features dictionary:
+            {
+                "image_id_1": {
+                    "active_player": "player_1",
+                    "cards": [
+                        {"full_label": "r_5","player": "center", ...},
+                        {"full_label": "b_skip", "player": "player_1", ...},
+                        ...
+                    ],
+                    ...
+        
+        output_path (str, optional): The path where the CSV file will be saved. Defaults to "predicted_labels.csv".
+
+    Returns:
+        pd.DataFrame: The created DataFrame.
+    """
 
     image_indexes = list(features.keys())
     center_card = []
