@@ -107,9 +107,12 @@ for img_id, feat in tqdm(features.items(), desc="Processing images ..."):
                 "blob_label": blob.label,
                 "crop":       extract_card_crops(rgb_img, entry)
             })
+            
+            cards_with_groups.setdefault(player, []).append(entry)
 
     feat["detected_cards"] = all_cards
     feat["cards"]          = cards_list
+    feat["cards_with_groups"]  = cards_with_groups
 
     # Step 6 — Card color detection
     img = feat["image"]
@@ -148,4 +151,4 @@ tqdm.write("---------------------------------------------------------")
 with open("train_features.pkl", "wb") as f:
     pickle.dump(features, f)
     
-make_submission_csv(features, "train_submission.csv")
+make_submission_csv(features, "submission.csv")
